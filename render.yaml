@@ -1,10 +1,10 @@
 services:
   - type: web
-    name: energy-api
+    name: energy-bot
     env: python
     plan: free
     buildCommand: ""
     startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
     envVars:
-      - key: GOOGLE_CREDENTIALS_JSON
-        sync: false
+      - key: PORT
+        value: 10000

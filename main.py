@@ -1,3 +1,11 @@
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+    return {"message": "Energy Bot работает!"}
+
 import logging
 from fastapi import FastAPI, Request
 import openpyxl

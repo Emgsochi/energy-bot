@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+openpyxl
+gspread
+oauth2client

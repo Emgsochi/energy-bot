@@ -16,17 +16,13 @@ async def receive_message(request: Request):
         data = await request.json()
         logger.info(f"📨 Получен запрос: {data}")
 
-        # ✅ Правильная проверка формата (список)
-        if not isinstance(data, list) or not data:
+        if not isinstance(data, dict) or not data:
             logger.warning("⚠️ Пустой запрос или неверный формат")
             return JSONResponse(content={"message": "No data"}, status_code=200)
 
-        # ✅ Извлечение первого элемента списка
-        message_data = data[0]
-
-        text = message_data.get("text", "").strip()
-        username = message_data.get("fromName", "Гость").strip()
-        messenger = message_data.get("messenger", "unknown").lower()
+        text = data.get("text", "").strip()
+        username = data.get("fromName", "Гость").strip()
+        messenger = data.get("messenger", "unknown").lower()
 
         logger.info(
             f"👤 Пользователь: {username} | 📩 Текст: {text[:50]}... | 📱 Мессенджер: {messenger}"
@@ -40,7 +36,6 @@ async def receive_message(request: Request):
         logger.exception(f"❌ Критическая ошибка: {str(e)}")
         return JSONResponse(content={"error": "Internal Server Error"}, status_code=500)
 
-# Для локального запуска
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

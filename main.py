@@ -1,45 +1,58 @@
-import os
 import logging
-import openai
 from fastapi import FastAPI, Request
-
-openai.api_key = os.getenv("OPENAI_API_KEY")
+import openpyxl
+import re
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
-PROMPT_TEMPLATE = """
-Ты — профессиональный менеджер рекламного агентства «Энерджи» в Сочи.
-Твоя задача — общаться с клиентами вежливо, дружелюбно и профессионально.
-Отвечай как человек, предлагай решения, задавай уточняющие вопросы.
-Если клиент написал что-то непонятное — задай уточнение.
+# Загружаем Excel-файл один раз при запуске
+wb = openpyxl.load_workbook("bot_energy.xlsx", data_only=True)
+sheet = wb["визитки цифра"]
 
-Сообщение клиента: "{user_message}"
-"""
+def parse_message(text):
+    match = re.search(r"(\d+)\s+визитк[иа]\s+(\d+)[xхXХ](\d+)\s+(двух|одно)сторонн", text, re.IGNORECASE)
+    if match:
+        qty = int(match.group(1))
+        width = match.group(2)
+        height = match.group(3)
+        side = match.group(4).lower()
+        format_str = f"{width}x{height}"
+        side_str = "4+4" if side == "двух" else "4+0"
+        return qty, format_str, side_str
+    return None, None, None
+
+def find_price(qty, format_str, side_str):
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        row_qty, row_format, row_side, price = row[:4]
+        if (int(row_qty) == qty and row_format == format_str and row_side == side_str):
+            return price
+    return None
 
 @app.get("/")
-def read_root():
+async def root():
     return {"message": "Energy Bot работает!"}
 
 @app.post("/wazzup/webhook")
 async def receive_message(request: Request):
-    data = await request.json()
-    user_message = data.get("text") or data.get("message") or ""
-
-    logging.info(f"📩 Получено сообщение: {user_message}")
-
-    prompt = PROMPT_TEMPLATE.format(user_message=user_message)
-
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",  # можно заменить на gpt-4 при необходимости
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.8
-        )
-        reply = response["choices"][0]["message"]["content"]
-        logging.info(f"🤖 Ответ нейросети: {reply}")
+        data = await request.json()
     except Exception as e:
-        logging.error(f"❌ Ошибка OpenAI: {e}")
-        reply = "Прошу прощения, сейчас не могу ответить. Напишите позже."
+        logging.error(f"❌ Невалидный JSON: {e}")
+        return {"status": "error", "message": "Невалидный JSON"}
 
-    return {"response": reply}
+    logging.info(f"📨 Получены данные: {data}")
+
+    text = data.get("text") or data.get("message") or ""
+    qty, size, sides = parse_message(text)
+
+    if qty and size and sides:
+        price = find_price(qty, size, sides)
+        if price:
+            logging.info(f"✅ Цена найдена: {qty} визиток {size} {sides} = {price}₽")
+        else:
+            logging.warning(f"❌ Не найдено в прайсе: {qty} {size} {sides}")
+    else:
+        logging.warning(f"⚠️ Не удалось распознать параметры в сообщении: {text}")
+
+    return {"status": "ok"}

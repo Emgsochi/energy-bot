@@ -1,44 +1,70 @@
-import logging
-from fastapi import FastAPI, Request
-import openai
 import os
+import logging
+import openpyxl
+import re
+import requests
+from fastapi import FastAPI, Request
+from openai import OpenAI
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Загружаем Excel-файл один раз
+wb = openpyxl.load_workbook("bot_energy.xlsx", data_only=True)
+sheet = wb["визитки цифра"]
 
-PROMPT_TEMPLATE = """
-Ты — профессиональный менеджер рекламного агентства «Энерджи Сочи». Агентство работает в Сочи, специализируется на digital-рекламе и креативных решениях.
+# GPT-ключ из переменных окружения
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-Твой стиль: уверенный, клиентоориентированный, дружелюбный. Не шаблонный. Используй конкретику, метафоры, примеры. Всегда предлагай решение и зови к действию. Отвечай так, как будто ты живой менеджер агентства.
-
-Вот сообщение от клиента:
-"{message}"
-
-Ответь как человек, в стиле агентства Energy.
+# Основной промт
+BASE_PROMPT = """
+Ты — профессиональный менеджер рекламного агентства "Энерджи" в Сочи. Общайся вежливо, дружелюбно и по делу.
+Отвечай на вопросы клиентов, помогай подобрать услугу, стоимость, дизайн, сроки. Не используй шаблоны.
 """
 
+def parse_message(text):
+    match = re.search(r"(\d+)\s+визитк[иа]\s+(\d+)[xхXХ](\d+)\s+(двух|одно)сторонн", text, re.IGNORECASE)
+    if match:
+        qty = int(match.group(1))
+        width = match.group(2)
+        height = match.group(3)
+        side = match.group(4).lower()
+        format_str = f"{width}x{height}"
+        side_str = "4+4" if side == "двух" else "4+0"
+        return qty, format_str, side_str
+    return None, None, None
+
+def find_price(qty, format_str, side_str):
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        row_qty, row_format, row_side, price = row[:4]
+        if (int(row_qty) == qty and row_format == format_str and row_side == side_str):
+            return price
+    return None
+
+def ask_gpt(message):
+    full_prompt = BASE_PROMPT + f"\nКлиент: {message}\nМенеджер:"
+    response = client.chat.completions.create(
+        model="gpt-4",  # или gpt-3.5-turbo
+        messages=[{"role": "user", "content": full_prompt}],
+        temperature=0.7
+    )
+    return response.choices[0].message.content.strip()
+
 @app.post("/wazzup/webhook")
-async def handle_message(request: Request):
+async def receive_message(request: Request):
     data = await request.json()
-    message = data.get("text") or data.get("message") or ""
-    
-    if not message:
-        logging.warning("Пустое сообщение.")
-        return {"status": "no message"}
+    text = data.get("text") or data.get("message") or ""
 
-    prompt = PROMPT_TEMPLATE.format(message=message)
+    qty, size, sides = parse_message(text)
+    if qty and size and sides:
+        price = find_price(qty, size, sides)
+        if price:
+            reply = f"{qty} визиток {size} {sides} — это {price}₽. Хотите оформить заказ?"
+        else:
+            reply = f"Не нашёл точную цену на {qty} визиток {size} {sides}, но могу уточнить!"
+    else:
+        reply = ask_gpt(text)
 
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        reply = response.choices[0].message.content.strip()
-        logging.info(f"💬 Ответ: {reply}")
-    except Exception as e:
-        logging.error(f"Ошибка GPT: {e}")
-        reply = "Прошу прощения, сейчас не могу ответить. Вернусь с ответом чуть позже!"
-
-    return {"reply": reply}
+    logging.info(f"Ответ клиенту: {reply}")
+    return {"response": reply}

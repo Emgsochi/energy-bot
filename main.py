@@ -1,27 +1,18 @@
-import os
 import logging
+import openai
+import os
+from fastapi import FastAPI, Request
 import openpyxl
 import re
-import requests
-from fastapi import FastAPI, Request
-from openai import OpenAI
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
-# Загружаем Excel-файл один раз
+# Загружаем Excel-файл
 wb = openpyxl.load_workbook("bot_energy.xlsx", data_only=True)
 sheet = wb["визитки цифра"]
-
-# GPT-ключ из переменных окружения
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-# Основной промт
-BASE_PROMPT = """
-Ты — профессиональный менеджер рекламного агентства "Энерджи" в Сочи. Общайся вежливо, дружелюбно и по делу.
-Отвечай на вопросы клиентов, помогай подобрать услугу, стоимость, дизайн, сроки. Не используй шаблоны.
-"""
 
 def parse_message(text):
     match = re.search(r"(\d+)\s+визитк[иа]\s+(\d+)[xхXХ](\d+)\s+(двух|одно)сторонн", text, re.IGNORECASE)
@@ -42,14 +33,20 @@ def find_price(qty, format_str, side_str):
             return price
     return None
 
-def ask_gpt(message):
-    full_prompt = BASE_PROMPT + f"\nКлиент: {message}\nМенеджер:"
-    response = client.chat.completions.create(
-        model="gpt-4",  # или gpt-3.5-turbo
-        messages=[{"role": "user", "content": full_prompt}],
-        temperature=0.7
+def generate_answer(text, price_info=None):
+    prompt_base = """
+Ты — менеджер рекламного агентства "Энерджи" из Сочи. Отвечай как человек: живо, понятно и дружелюбно. Предлагай помощь, уточняй детали и веди диалог, как если бы ты писал клиенту сам. Отвечай на русском.
+"""
+    if price_info:
+        prompt = prompt_base + f"\nКлиент спросил: '{text}'\nНайдено в прайсе: {price_info}\nОтветь клиенту, как менеджер."
+    else:
+        prompt = prompt_base + f"\nКлиент написал: '{text}'\nОтветь, задавая уточняющие вопросы, если нужно."
+
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[{ "role": "user", "content": prompt }]
     )
-    return response.choices[0].message.content.strip()
+    return response['choices'][0]['message']['content']
 
 @app.post("/wazzup/webhook")
 async def receive_message(request: Request):
@@ -59,12 +56,13 @@ async def receive_message(request: Request):
     qty, size, sides = parse_message(text)
     if qty and size and sides:
         price = find_price(qty, size, sides)
-        if price:
-            reply = f"{qty} визиток {size} {sides} — это {price}₽. Хотите оформить заказ?"
-        else:
-            reply = f"Не нашёл точную цену на {qty} визиток {size} {sides}, но могу уточнить!"
+        price_info = f"{qty} визиток {size} {sides} — {price}₽" if price else None
     else:
-        reply = ask_gpt(text)
+        price_info = None
 
-    logging.info(f"Ответ клиенту: {reply}")
-    return {"response": reply}
+    reply = generate_answer(text, price_info)
+
+    logging.info(f"📨 Клиент: {text}")
+    logging.info(f"🤖 Ответ: {reply}")
+
+    return {"reply": reply}

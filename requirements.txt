@@ -3,3 +3,4 @@ uvicorn
 openpyxl
 gspread
 oauth2client
+openai

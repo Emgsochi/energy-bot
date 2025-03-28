@@ -1,11 +1,3 @@
-from fastapi import FastAPI
-
-app = FastAPI()
-
-@app.get("/")
-def read_root():
-    return {"message": "Energy Bot работает!"}
-
 import logging
 from fastapi import FastAPI, Request
 import openpyxl
@@ -13,6 +5,11 @@ import re
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
+
+# ✅ Добавлен маршрут для главной страницы
+@app.get("/")
+def root():
+    return {"message": "Energy Bot работает!"}
 
 # Загружаем Excel-файл один раз при запуске
 wb = openpyxl.load_workbook("bot_energy.xlsx", data_only=True)

@@ -1,127 +1,73 @@
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
-from openai import OpenAI
 import os
-import re
-import gspread
+from fastapi import FastAPI, Request
+from openai import OpenAI
 from oauth2client.service_account import ServiceAccountCredentials
+import gspread
+from extract_parameters import extract_parameters
+from wazzup_webhook import send_message
 
-# Инициализация FastAPI
 app = FastAPI()
 
-# Инициализация OpenAI клиента
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Загрузка переменных окружения
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-# Авторизация в Google Sheets
-CREDENTIALS_FILE = 'H:/RoboJulia/credentials.json'
-SPREADSHEET_NAME = 'EnergyBD'
-SHEET_NAME = 'прайс'
+# Настройка OpenAI (новый синтаксис)
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+# Подключение к Google Sheets
+scope = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive"
+]
+
+CREDENTIALS_FILE = "credentials.json"  # ⚠️ Убедись, что этот файл есть в репозитории
+
 creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
-sheet_client = gspread.authorize(creds)
-sheet = sheet_client.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
-data = sheet.get_all_values()
-
-
-# Синонимы
-SYNONYMS = {
-    "двусторонние": "4+4",
-    "двусторонняя": "4+4",
-    "двухсторонние": "4+4",
-    "односторонние": "4+0",
-    "односторонняя": "4+0",
-    "визитки": "визитки",
-    "визитка": "визитки",
-    "90х50": "90x50",
-    "90x50": "90x50"
-}
-
-
-def extract_parameters(query: str) -> dict:
-    query = query.lower()
-    for word, replacement in SYNONYMS.items():
-        query = query.replace(word, replacement)
-
-    # Кол-во
-    quantity_match = re.search(r"\d+", query)
-    quantity = int(quantity_match.group()) if quantity_match else None
-
-    # Размер
-    size_match = re.search(r"\d{2,4}[xх*]\d{2,4}", query)
-    size = size_match.group().replace("х", "x").replace("*", "x") if size_match else None
-
-    # Формат
-    format_match = re.search(r"\d\+\d|\d{1,2}\+\d{1,2}", query)
-    format_value = format_match.group() if format_match else None
-
-    # Продукт
-    product = "визитки" if "визитки" in query else None
-
-    return {
-        "product": product,
-        "format": format_value,
-        "size": size,
-        "quantity": quantity
-    }
-
-
-def find_price_row(params):
-    for row in data[1:]:  # пропускаем заголовок
-        if (
-            params["product"] and params["product"] in row[0].lower()
-            and params["format"] and params["format"] in row[1]
-            and params["size"] and params["size"] in row[2]
-            and params["quantity"] and str(params["quantity"]) in row[3]
-        ):
-            return row
-    return None
+client_gsheets = gspread.authorize(creds)
+sheet = client_gsheets.open("bot_energy").sheet1
 
 
 @app.post("/wazzup/webhook")
 async def receive_webhook(request: Request):
+    data = await request.json()
     try:
-        data = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        # Извлечение сообщения
+        message_text = data.get("message", {}).get("text", "")
+        chat_id = data.get("chat", {}).get("id")
 
-    if isinstance(data, list) and len(data) > 0:
-        data = data[0]
-    elif isinstance(data, dict):
-        pass
-    else:
-        raise HTTPException(status_code=400, detail="Payload must be JSON object or array")
+        print(f"📩 Получено сообщение от {chat_id}: {message_text}")
 
-    text = data.get("text", "")
-    contact_name = data.get("contact_name", "")
-    print(f"📩 Получено сообщение от {contact_name}: {text}")
+        # Параметры из текста
+        params = extract_parameters(message_text)
+        print("🧠 Извлечённые параметры:", params)
 
-    # Извлекаем параметры
-    params = extract_parameters(text)
-    print(f"🧠 Извлечённые параметры: {params}")
+        # Генерация ответа от ChatGPT
+        prompt = f"""Ты — вежливый менеджер рекламного агентства ENERGY в Сочи. 
+Клиент спрашивает: "{message_text}"
 
-    # Пытаемся найти цену
-    price_row = find_price_row(params)
-    if price_row:
-        response_text = (
-            f"Стоимость {params['quantity']} визиток {params['size']} {params['format']} — {price_row[4]} ₽"
-        )
-    else:
-        response_text = (
-            "К сожалению, не удалось найти цену по вашему запросу. Уточните, пожалуйста, параметры (формат, размер, количество)."
+Используй дружелюбный стиль и краткий ответ. Если знаешь цену, скажи её. 
+Если не можешь — задай уточняющий вопрос.
+
+Извлечённые параметры: {params}"""
+
+        gpt_response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "system", "content": "Ты менеджер ENERGY"},
+                      {"role": "user", "content": prompt}],
+            temperature=0.7
         )
 
-    # Запрос к ChatGPT для более человеческого ответа
-    gpt_response = openai_client.chat.completions.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": "Ты — дружелюбный менеджер рекламного агентства."},
-            {"role": "user", "content": f"Запрос клиента: {text}. Ответ от базы: {response_text}"}
-        ],
-        temperature=0.7
-    )
+        final_text = gpt_response.choices[0].message.content.strip()
+        print("🤖 Ответ GPT:", final_text)
 
-    final_reply = gpt_response.choices[0].message.content
-    print("🤖 Ответ GPT:", final_reply)
+        # Отправка ответа обратно клиенту
+        send_message(chat_id=chat_id, text=final_text, bot_token=BOT_TOKEN)
 
-    return JSONResponse(content={"status": "ok", "reply": final_reply})
+        return {"status": "ok"}
+
+    except Exception as e:
+        print("❌ Ошибка:", e)
+        return {"status": "error", "details": str(e)}

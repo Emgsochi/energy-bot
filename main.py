@@ -1,74 +1,127 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
-import openai
+from openai import OpenAI
 import os
-from extract_parameters import extract_parameters
+import re
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
+# Инициализация FastAPI
 app = FastAPI()
 
-# Устанавливаем API-ключ OpenAI из переменной окружения
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Инициализация OpenAI клиента
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Авторизация в Google Sheets
+CREDENTIALS_FILE = 'H:/RoboJulia/credentials.json'
+SPREADSHEET_NAME = 'EnergyBD'
+SHEET_NAME = 'прайс'
+
+scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
+sheet_client = gspread.authorize(creds)
+sheet = sheet_client.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
+data = sheet.get_all_values()
+
+
+# Синонимы
+SYNONYMS = {
+    "двусторонние": "4+4",
+    "двусторонняя": "4+4",
+    "двухсторонние": "4+4",
+    "односторонние": "4+0",
+    "односторонняя": "4+0",
+    "визитки": "визитки",
+    "визитка": "визитки",
+    "90х50": "90x50",
+    "90x50": "90x50"
+}
+
+
+def extract_parameters(query: str) -> dict:
+    query = query.lower()
+    for word, replacement in SYNONYMS.items():
+        query = query.replace(word, replacement)
+
+    # Кол-во
+    quantity_match = re.search(r"\d+", query)
+    quantity = int(quantity_match.group()) if quantity_match else None
+
+    # Размер
+    size_match = re.search(r"\d{2,4}[xх*]\d{2,4}", query)
+    size = size_match.group().replace("х", "x").replace("*", "x") if size_match else None
+
+    # Формат
+    format_match = re.search(r"\d\+\d|\d{1,2}\+\d{1,2}", query)
+    format_value = format_match.group() if format_match else None
+
+    # Продукт
+    product = "визитки" if "визитки" in query else None
+
+    return {
+        "product": product,
+        "format": format_value,
+        "size": size,
+        "quantity": quantity
+    }
+
+
+def find_price_row(params):
+    for row in data[1:]:  # пропускаем заголовок
+        if (
+            params["product"] and params["product"] in row[0].lower()
+            and params["format"] and params["format"] in row[1]
+            and params["size"] and params["size"] in row[2]
+            and params["quantity"] and str(params["quantity"]) in row[3]
+        ):
+            return row
+    return None
+
 
 @app.post("/wazzup/webhook")
 async def receive_webhook(request: Request):
     try:
-        payload = await request.json()
+        data = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    # Универсальная обработка формата
-    if payload is None or payload == "":
-        data = {}
-    elif isinstance(payload, list):
-        data = payload[0] if len(payload) > 0 else {}
-    elif isinstance(payload, dict):
-        data = payload
+    if isinstance(data, list) and len(data) > 0:
+        data = data[0]
+    elif isinstance(data, dict):
+        pass
     else:
         raise HTTPException(status_code=400, detail="Payload must be JSON object or array")
 
-    # Извлекаем данные из запроса
     text = data.get("text", "")
     contact_name = data.get("contact_name", "")
-    contact_id = data.get("contact_id", "")
-
     print(f"📩 Получено сообщение от {contact_name}: {text}")
 
-    # Обработка параметров (кол-во, формат, размер, продукт)
-    extracted = extract_parameters(text)
-    print("🧠 Извлечённые параметры:", extracted)
+    # Извлекаем параметры
+    params = extract_parameters(text)
+    print(f"🧠 Извлечённые параметры: {params}")
 
-    # Генерируем системную инструкцию и запрос для GPT
-    system_prompt = (
-        "Ты — дружелюбный помощник рекламного агентства Энерджи в Сочи. "
-        "Ты помогаешь клиентам посчитать стоимость продукции и объясняешь, если что-то непонятно."
-    )
+    # Пытаемся найти цену
+    price_row = find_price_row(params)
+    if price_row:
+        response_text = (
+            f"Стоимость {params['quantity']} визиток {params['size']} {params['format']} — {price_row[4]} ₽"
+        )
+    else:
+        response_text = (
+            "К сожалению, не удалось найти цену по вашему запросу. Уточните, пожалуйста, параметры (формат, размер, количество)."
+        )
 
-    # Формируем пользовательский запрос с параметрами
-    user_prompt = (
-        f"Клиент спрашивает: {text}\n\n"
-        f"В сообщении я нашёл такие параметры:\n"
-        f"- Количество: {extracted.get('quantity') or 'не указано'}\n"
-        f"- Размер: {extracted.get('size') or 'не указано'}\n"
-        f"- Формат: {extracted.get('format') or 'не указан'}\n"
-        f"- Продукт: {extracted.get('product') or 'не указан'}\n\n"
-        "Ответь так, как если бы ты был менеджером агентства: дружелюбно, без лишней воды, и если нужно — уточни."
-    )
-
-    # Запрос к GPT
-    gpt_response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
+    # Запрос к ChatGPT для более человеческого ответа
+    gpt_response = openai_client.chat.completions.create(
+        model="gpt-4",
         messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
+            {"role": "system", "content": "Ты — дружелюбный менеджер рекламного агентства."},
+            {"role": "user", "content": f"Запрос клиента: {text}. Ответ от базы: {response_text}"}
+        ],
+        temperature=0.7
     )
 
-    reply = gpt_response.choices[0].message.content.strip()
-    print("🤖 Ответ GPT:", reply)
+    final_reply = gpt_response.choices[0].message.content
+    print("🤖 Ответ GPT:", final_reply)
 
-    # Ответ для Albato (чтобы переслать его обратно в Telegram через webhook)
-    return JSONResponse(content={
-        "text": reply,
-        "contact_id": contact_id,
-        "contact_name": contact_name
-    })
+    return JSONResponse(content={"status": "ok", "reply": final_reply})

@@ -1,76 +1,56 @@
-from fastapi import FastAPI, Request
 import os
-import requests
-import logging
-from openai import OpenAI
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
+from openai import OpenAI
 
-# Логирование
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+load_dotenv()  # Загружаем переменные из .env (если используешь локально)
 
-# OpenAI client (использует переменную окружения OPENAI_API_KEY)
-client = OpenAI()
+# Явно передаём API ключ — это обязательно
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Инициализация FastAPI
 app = FastAPI()
 
-# Ключ для отправки через Wazzup
-WAZZUP_API_KEY = os.getenv("WAZZUP_API_KEY")
 
-# Модель запроса (на случай, если ты решишь использовать строгую валидацию)
-class IncomingMessage(BaseModel):
-    chat_id: str
-    text: str
-    name: str = "Гость"
-    channel: str = "telegram"
+class Message(BaseModel):
+    message: str
 
 
 @app.post("/wazzup/webhook")
-async def handle_message(request: Request):
+async def handle_wazzup(request: Request):
     try:
         data = await request.json()
+        print("Получено сообщение:", data)
 
-        chat_id = data.get("chat_id")
-        text = data.get("text")
-        name = data.get("name", "Гость")
-        channel = data.get("channel", "telegram")
+        user_text = extract_text(data)
+        if not user_text:
+            return {"status": "ignored", "reason": "no_text"}
 
-        if not all([chat_id, text]):
-            logger.warning("Missing data in request.")
-            return {"status": "missing_data"}
-
-        logger.info(f"Входящее сообщение от {name}: {text}")
-
-        # Обращение к OpenAI
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "Ты вежливый и профессиональный менеджер по продажам. Отвечай кратко, но понятно."},
-                {"role": "user", "content": text}
-            ]
+                {"role": "system", "content": "Ты — дружелюбный ассистент."},
+                {"role": "user", "content": user_text},
+            ],
         )
 
-        reply_text = response.choices[0].message.content.strip()
-        logger.info(f"Ответ GPT: {reply_text}")
-
-        # Отправка ответа клиенту через Wazzup
-        send_url = "https://api.wazzup24.com/v3/message"
-        headers = {
-            "Authorization": f"Bearer {WAZZUP_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "channelId": chat_id,
-            "text": reply_text,
-            "type": "text"
-        }
-
-        send_response = requests.post(send_url, json=payload, headers=headers)
-        logger.info(f"Ответ Wazzup API: {send_response.status_code} - {send_response.text}")
-
-        return {"status": "ok", "gpt_reply": reply_text}
+        reply = response.choices[0].message.content
+        print("Ответ GPT:", reply)
+        return {"status": "ok", "reply": reply}
 
     except Exception as e:
-        logger.error(f"Ошибка при обработке запроса: {str(e)}")
-        return {"status": "error", "message": str(e)}
+        print("Ошибка:", e)
+        return {"status": "error", "detail": str(e)}
+
+
+def extract_text(data):
+    # Обработка формата Wazzup (может быть dict или list)
+    if isinstance(data, dict) and "messages" in data:
+        for message in data["messages"]:
+            if "text" in message:
+                return message["text"]
+    elif isinstance(data, list):
+        for item in data:
+            if "text" in item:
+                return item["text"]
+    return None

@@ -1,66 +1,76 @@
-import os
-import json
-import logging
-import requests
 from fastapi import FastAPI, Request
-from pydantic import BaseModel
+import os
+import requests
+import logging
 from openai import OpenAI
+from pydantic import BaseModel
 
-app = FastAPI()
+# Логирование
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Инициализация OpenAI клиента
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# OpenAI client (использует переменную окружения OPENAI_API_KEY)
+client = OpenAI()
 
-# Переменные окружения
+# Инициализация FastAPI
+app = FastAPI()
+
+# Ключ для отправки через Wazzup
 WAZZUP_API_KEY = os.getenv("WAZZUP_API_KEY")
-WAZZUP_SEND_URL = "https://api.wazzup24.com/v3/message"  # эндпоинт отправки сообщения
+
+# Модель запроса (на случай, если ты решишь использовать строгую валидацию)
+class IncomingMessage(BaseModel):
+    chat_id: str
+    text: str
+    name: str = "Гость"
+    channel: str = "telegram"
 
 
-# Функция отправки ответа клиенту через Wazzup
-def send_wazzup_message(chat_id: str, text: str):
-    headers = {
-        "Authorization": f"Bearer {WAZZUP_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "chatId": chat_id,
-        "text": text,
-        "type": "text"
-    }
-    response = requests.post(WAZZUP_SEND_URL, headers=headers, json=data)
-    logging.info(f"📤 Ответ отправлен через Wazzup: {response.status_code} {response.text}")
-    return response
-
-
-# Обработка вебхука от Albato
 @app.post("/wazzup/webhook")
-async def receive_message(request: Request):
-    body = await request.json()
-    logging.info(f"📥 RAW BODY: {body}")
+async def handle_message(request: Request):
+    try:
+        data = await request.json()
 
-    # Проверка и извлечение данных
-    chat_id = body.get("chat_id")
-    text = body.get("text")
-    name = body.get("name", "Гость")
-    channel = body.get("channel")
+        chat_id = data.get("chat_id")
+        text = data.get("text")
+        name = data.get("name", "Гость")
+        channel = data.get("channel", "telegram")
 
-    if not all([chat_id, text, name, channel]):
-        logging.warning("⚠️ Недостаточно данных: text, chat_id, name, channel")
-        return {"status": "missing_data"}
+        if not all([chat_id, text]):
+            logger.warning("Missing data in request.")
+            return {"status": "missing_data"}
 
-    # GPT: генерация ответа
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": "Ты оператор печати. Отвечай вежливо, ясно, кратко, как человек."},
-            {"role": "user", "content": text}
-        ]
-    )
-    gpt_reply = response.choices[0].message.content
-    logging.info(f"🤖 GPT ответ: {gpt_reply}")
+        logger.info(f"Входящее сообщение от {name}: {text}")
 
-    # Отправка ответа в Wazzup
-    send_wazzup_message(chat_id, gpt_reply)
+        # Обращение к OpenAI
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "Ты вежливый и профессиональный менеджер по продажам. Отвечай кратко, но понятно."},
+                {"role": "user", "content": text}
+            ]
+        )
 
-    return {"status": "ok"}
+        reply_text = response.choices[0].message.content.strip()
+        logger.info(f"Ответ GPT: {reply_text}")
+
+        # Отправка ответа клиенту через Wazzup
+        send_url = "https://api.wazzup24.com/v3/message"
+        headers = {
+            "Authorization": f"Bearer {WAZZUP_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "channelId": chat_id,
+            "text": reply_text,
+            "type": "text"
+        }
+
+        send_response = requests.post(send_url, json=payload, headers=headers)
+        logger.info(f"Ответ Wazzup API: {send_response.status_code} - {send_response.text}")
+
+        return {"status": "ok", "gpt_reply": reply_text}
+
+    except Exception as e:
+        logger.error(f"Ошибка при обработке запроса: {str(e)}")
+        return {"status": "error", "message": str(e)}

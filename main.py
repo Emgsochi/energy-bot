@@ -1,56 +1,59 @@
 import os
-from dotenv import load_dotenv
+import logging
 from fastapi import FastAPI, Request
-from pydantic import BaseModel
-from openai import OpenAI
+from fastapi.responses import JSONResponse
+from openai import AsyncOpenAI
 
-load_dotenv()  # Загружаем переменные из .env (если используешь локально)
+# Инициализация логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Явно передаём API ключ — это обязательно
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
+# Создание FastAPI приложения
 app = FastAPI()
 
-
-class Message(BaseModel):
-    message: str
-
+# Инициализация клиента OpenAI (берёт ключ из переменной окружения)
+client = AsyncOpenAI()  # Никаких proxies и api_key не передаём вручную
 
 @app.post("/wazzup/webhook")
-async def handle_wazzup(request: Request):
+async def webhook(request: Request):
     try:
         data = await request.json()
-        print("Получено сообщение:", data)
+        logger.info(f"📩 Получены данные: {data}")
 
-        user_text = extract_text(data)
-        if not user_text:
-            return {"status": "ignored", "reason": "no_text"}
+        # Обработка формата списка от Albato
+        if isinstance(data, list):
+            if not data:
+                return JSONResponse({"message": "Пустой запрос"}, status_code=200)
+            data = data[0]
 
-        response = client.chat.completions.create(
-            model="gpt-4",
+        text = data.get("text", "")
+        chat_id = data.get("chatId", "")
+        messenger = data.get("messenger", "")
+        from_name = data.get("fromName", "Клиент")
+
+        if not text:
+            return JSONResponse({"message": "Пустое сообщение"}, status_code=200)
+
+        # Запрос к OpenAI
+        response = await client.chat.completions.create(
+            model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Ты — дружелюбный ассистент."},
-                {"role": "user", "content": user_text},
-            ],
+                {"role": "system", "content": "Ты вежливый ассистент рекламного агентства Энерджи."},
+                {"role": "user", "content": text}
+            ]
         )
 
-        reply = response.choices[0].message.content
-        print("Ответ GPT:", reply)
-        return {"status": "ok", "reply": reply}
+        ai_reply = response.choices[0].message.content.strip()
+        logger.info(f"🤖 Ответ GPT: {ai_reply}")
+
+        return JSONResponse({"reply": ai_reply}, status_code=200)
 
     except Exception as e:
-        print("Ошибка:", e)
-        return {"status": "error", "detail": str(e)}
+        logger.exception("❌ Ошибка обработки запроса")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
-def extract_text(data):
-    # Обработка формата Wazzup (может быть dict или list)
-    if isinstance(data, dict) and "messages" in data:
-        for message in data["messages"]:
-            if "text" in message:
-                return message["text"]
-    elif isinstance(data, list):
-        for item in data:
-            if "text" in item:
-                return item["text"]
-    return None
+# Для локального запуска (не используется на Render)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=10000)

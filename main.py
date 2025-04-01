@@ -1,94 +1,66 @@
-from fastapi import FastAPI, Request
-import logging
 import os
-import openai
-import gspread
-import requests
 import json
-from oauth2client.service_account import ServiceAccountCredentials
+import logging
+import requests
+from fastapi import FastAPI, Request
+from pydantic import BaseModel
+from openai import OpenAI
 
-# 🔧 Настройка логов
+app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
-# ✅ Получаем переменные из Render
-openai.api_key = os.getenv("OPENAI_API_KEY")
-wazzup_token = os.getenv("WAZZUP_API_KEY")
-sheet_id = os.getenv("GOOGLE_SHEET_ID")
+# Инициализация OpenAI клиента
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# 📌 JSON-ключ как строка
-google_json_str = os.getenv("GOOGLE_CREDENTIALS_JSON")
-
-# 🧠 Авторизация Google Sheets напрямую из строки
-creds_dict = json.loads(google_json_str)
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-client = gspread.authorize(credentials)
-sheet = client.open_by_key(sheet_id).sheet1
+# Переменные окружения
+WAZZUP_API_KEY = os.getenv("WAZZUP_API_KEY")
+WAZZUP_SEND_URL = "https://api.wazzup24.com/v3/message"  # эндпоинт отправки сообщения
 
 
-# 🔍 Поиск товара
-def find_product_info(text: str) -> str:
-    rows = sheet.get_all_records()
-    for row in rows:
-        name = row.get("Название", "").lower()
-        qty = str(row.get("Кол-во", "")).lower()
-        format_ = row.get("Формат", "").lower()
-        if all(k in text.lower() for k in [name, qty, format_]):
-            return f"{row['Название']} {row['Кол-во']} {row['Формат']} — {row['Цена']}₽"
-    return "Не удалось найти позицию, уточните, пожалуйста."
-
-
-# 📬 Отправка ответа через Wazzup API
-def send_reply(chat_id: str, message: str) -> str:
-    url = "https://api.wazzup24.com/v3/message"
+# Функция отправки ответа клиенту через Wazzup
+def send_wazzup_message(chat_id: str, text: str):
     headers = {
-        "Authorization": f"Bearer {wazzup_token}",
+        "Authorization": f"Bearer {WAZZUP_API_KEY}",
         "Content-Type": "application/json"
     }
-    payload = {
+    data = {
         "chatId": chat_id,
-        "text": message
+        "text": text,
+        "type": "text"
     }
-    response = requests.post(url, json=payload, headers=headers)
-    logging.info(f"📤 Отправка в Wazzup: {response.status_code} | {response.text}")
-    return "sent" if response.status_code == 200 else f"error: {response.status_code}"
+    response = requests.post(WAZZUP_SEND_URL, headers=headers, json=data)
+    logging.info(f"📤 Ответ отправлен через Wazzup: {response.status_code} {response.text}")
+    return response
 
 
-# 🚀 FastAPI
-app = FastAPI()
-
-
+# Обработка вебхука от Albato
 @app.post("/wazzup/webhook")
-async def wazzup_webhook(request: Request):
-    try:
-        data = await request.json()
-        logging.info(f"📩 Получено: {data}")
+async def receive_message(request: Request):
+    body = await request.json()
+    logging.info(f"📥 RAW BODY: {body}")
 
-        text = data.get("text")
-        chat_id = data.get("chat_id")
-        name = data.get("name", "Гость")
+    # Проверка и извлечение данных
+    chat_id = body.get("chat_id")
+    text = body.get("text")
+    name = body.get("name", "Гость")
+    channel = body.get("channel")
 
-        if not all([text, chat_id]):
-            logging.warning("⚠️ Недостаточно данных")
-            return {"status": "missing_data"}
+    if not all([chat_id, text, name, channel]):
+        logging.warning("⚠️ Недостаточно данных: text, chat_id, name, channel")
+        return {"status": "missing_data"}
 
-        # Поиск и генерация ответа
-        match = find_product_info(text)
-        prompt = f"Клиент спрашивает: {text}\nНайдено в прайсе: {match}\nОтветь понятно и дружелюбно."
+    # GPT: генерация ответа
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "Ты оператор печати. Отвечай вежливо, ясно, кратко, как человек."},
+            {"role": "user", "content": text}
+        ]
+    )
+    gpt_reply = response.choices[0].message.content
+    logging.info(f"🤖 GPT ответ: {gpt_reply}")
 
-        reply = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "Ты менеджер рекламного агентства, отвечай понятно, коротко и дружелюбно."},
-                {"role": "user", "content": prompt}
-            ]
-        ).choices[0].message.content.strip()
+    # Отправка ответа в Wazzup
+    send_wazzup_message(chat_id, gpt_reply)
 
-        logging.info(f"🤖 GPT ответ: {reply}")
-        status = send_reply(chat_id, reply)
-
-        return {"status": "ok", "sent": status, "reply": reply}
-
-    except Exception as e:
-        logging.error(f"🔥 Ошибка: {e}")
-        return {"status": "error", "detail": str(e)}
+    return {"status": "ok"}

@@ -1,49 +1,77 @@
 from fastapi import FastAPI, Request
-from pydantic import BaseModel
 import logging
-import json
+import os
+import openai
+import requests
+from dotenv import load_dotenv
+
+# Загрузка переменных окружения
+load_dotenv()
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
+wazzup_api_key = os.getenv("WAZZUP_API_KEY")
 
 app = FastAPI()
-logging.basicConfig(level=logging.INFO)
 
-class WazzupMessage(BaseModel):
-    text: str
-    chat_id: str
-    name: str
-    channel: str
+logging.basicConfig(level=logging.INFO)
 
 @app.post("/wazzup/webhook")
 async def wazzup_webhook(request: Request):
-    # Логируем заголовки
-    headers = dict(request.headers)
-    logging.info(f"📬 Headers: {headers}")
-
-    # Получаем и логируем RAW тело
-    raw_body = await request.body()
-    body_str = raw_body.decode("utf-8")
-    logging.info(f"📥 RAW BODY: {body_str}")
-
     try:
-        data = json.loads(body_str)
-        logging.info(f"📩 PARSED JSON: {json.dumps(data, indent=2, ensure_ascii=False)}")
+        data = await request.json()
+        logging.info(f"📩 Получен JSON: {data}")
 
-        # Проверяем наличие необходимых полей
-        required_fields = ["text", "chat_id", "name", "channel"]
-        if not all(field in data for field in required_fields):
-            logging.warning("⚠️ Недостаточно данных: text, chat_id, name, channel")
-            return {"message": "Недостаточно данных"}
+        text = data.get("text")
+        chat_id = data.get("chat_id")
+        name = data.get("name", "Гость")
+        channel = data.get("channel", "unknown")
 
-        message = WazzupMessage(**data)
+        if not all([text, chat_id, name, channel]):
+            logging.warning("⚠️ Недостаточно данных")
+            return {"status": "error", "message": "Недостаточно данных"}
 
-        # Здесь логика обработки сообщения
-        logging.info(f"✅ Получено сообщение от {message.name} в {message.channel}: {message.text}")
+        logging.info(f"🔍 Обработка сообщения от {name} ({channel}) - {text}")
 
-        return {"message": f"Принято сообщение: {message.text}"}
+        # Генерация ответа от GPT
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "Ты вежливый менеджер полиграфической компании и помогаешь клиентам с расчётом стоимости продукции."},
+                {"role": "user", "content": text}
+            ]
+        )
+        reply = response.choices[0].message.content.strip()
+        logging.info(f"🤖 Ответ: {reply}")
 
-    except json.JSONDecodeError:
-        logging.error("❌ Ошибка декодирования JSON")
-        return {"message": "Некорректный JSON"}
+        # Отправка ответа через Wazzup API
+        send_status = send_reply_to_client(chat_id, reply)
+        return {"status": "ok", "reply": reply, "wazzup_status": send_status}
 
     except Exception as e:
-        logging.error(f"❌ Общая ошибка: {str(e)}")
-        return {"message": "Внутренняя ошибка сервера"}
+        logging.error(f"🔥 Ошибка при обработке запроса: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def send_reply_to_client(chat_id: str, message: str) -> str:
+    try:
+        url = "https://api.wazzup24.com/v3/message"
+        headers = {
+            "Authorization": f"Bearer {wazzup_api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "chatId": chat_id,
+            "text": message
+        }
+
+        res = requests.post(url, json=payload, headers=headers)
+        logging.info(f"📤 Отправка в Wazzup: {res.status_code} | {res.text}")
+
+        if res.status_code == 200:
+            return "sent"
+        else:
+            return f"failed: {res.status_code}"
+
+    except Exception as e:
+        logging.error(f"🚫 Ошибка при отправке в Wazzup: {e}")
+        return f"error: {e}"

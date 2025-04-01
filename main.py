@@ -4,51 +4,48 @@ import logging
 import json
 
 app = FastAPI()
-
-# Настройка логов
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.INFO)
 
 @app.post("/wazzup/webhook")
 async def webhook(request: Request):
     try:
-        # Получаем тело запроса
+        # Логируем тело запроса
         raw_body = await request.body()
-        logging.info(f"📩 RAW body: {raw_body.decode('utf-8')}")
+        logging.info(f"📥 RAW BODY: {raw_body.decode('utf-8')}")
 
         data = await request.json()
-        logging.info(f"✅ Parsed JSON: {json.dumps(data, ensure_ascii=False)}")
+        logging.info(f"📩 PARSED JSON: {json.dumps(data, ensure_ascii=False, indent=2)}")
 
-        # Если приходит список — берём первый элемент
+        # Если данные в виде списка — берем первый элемент
         if isinstance(data, list):
             if not data:
-                logging.warning("⚠️ Получен пустой список")
                 return JSONResponse({"message": "Нет данных"}, status_code=200)
             data = data[0]
 
+        # Проверка, что это словарь
         if not isinstance(data, dict):
-            logging.error("❌ Неверный формат данных (не dict)")
-            return JSONResponse({"error": "Неверный формат данных"}, status_code=400)
+            raise HTTPException(status_code=400, detail="Формат запроса должен быть JSON-объектом")
 
         # Проверка обязательных полей
         required_fields = ["text", "chat_id", "channel"]
-        missing = [field for field in required_fields if not data.get(field)]
-
+        missing = [f for f in required_fields if not data.get(f)]
         if missing:
-            logging.warning(f"⚠️ Отсутствуют обязательные поля: {missing}")
-            return JSONResponse({"error": f"Недостаточно данных: {', '.join(missing)}"}, status_code=400)
+            error_msg = f"Недостаточно данных: {', '.join(missing)}"
+            logging.warning(f"⚠️ {error_msg}")
+            return JSONResponse({"error": error_msg}, status_code=400)
 
-        # Извлекаем данные
-        text = data.get("text")
-        chat_id = data.get("chat_id")
-        channel = data.get("channel")
+        # Извлечение данных
+        text = data["text"]
+        chat_id = data["chat_id"]
+        channel = data["channel"]
         name = data.get("name", "Гость")
 
-        # Ответ пользователю
-        reply = f"{name}, ваш запрос «{text}» получен! Мы уже начали расчёт 🧮"
+        # Ответ
+        reply = f"{name}, ваш запрос «{text}» получен! Мы уже начали расчёт 🎯"
+        logging.info(f"✅ Ответ: {reply}")
 
-        logging.info(f"📤 Ответ клиенту: {reply}")
         return JSONResponse({"reply": reply})
 
     except Exception as e:
         logging.exception("❌ Ошибка при обработке запроса")
-        return JSONResponse({"error": "Внутренняя ошибка сервера"}, status_code=500)
+        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")

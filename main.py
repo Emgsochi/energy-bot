@@ -1,47 +1,52 @@
+import os
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from openai import OpenAI
-import logging
+from httpx import Client
 
-app = FastAPI()
-
-# В openai==1.9.0 всё работает корректно без api_key и proxies
-client = OpenAI()
-
+# Настройка логов
 logging.basicConfig(level=logging.INFO)
 
+# Создаем FastAPI приложение
+app = FastAPI()
+
+# Явно создаем http-клиент без прокси
+http_client = Client(proxies=None)
+
+# Инициализируем OpenAI клиент, используя переменную окружения и http_client
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    http_client=http_client
+)
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
 @app.post("/wazzup/webhook")
-async def webhook(request: Request):
+async def wazzup_webhook(request: Request):
     try:
         data = await request.json()
         logging.info(f"📩 Получен запрос: {data}")
 
-        if isinstance(data, list):
-            if not data:
-                return JSONResponse({"message": "Пустой список"}, status_code=200)
-            data = data[0]
+        # Пример обработки текста (если есть)
+        text = data.get("text", "Привет! Расскажи, чем могу помочь?")
 
-        text = data.get("text", "")
-        name = data.get("fromName", "Клиент")
-
-        if not text:
-            return JSONResponse({"message": "Пустой текст"}, status_code=200)
-
+        # Вызов OpenAI (GPT-3.5 или GPT-4)
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Ты — дружелюбный помощник."},
+                {"role": "system", "content": "Ты — помощник типографии."},
                 {"role": "user", "content": text}
             ]
         )
 
         reply = response.choices[0].message.content.strip()
-        return JSONResponse({"reply": f"{name}, ответ: {reply}"})
+        logging.info(f"💬 Ответ: {reply}")
+        return {"reply": reply}
 
     except Exception as e:
-        logging.exception("❌ Ошибка обработки запроса")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+        logging.exception("❌ Ошибка при обработке запроса")
+        return JSONResponse(content={"error": str(e)}, status_code=500)

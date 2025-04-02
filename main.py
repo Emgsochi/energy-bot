@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
-client = OpenAI()  # SDK подтягивает ключ из переменной OPENAI_API_KEY
+client = OpenAI()  # OpenAI SDK >= 1.10.0, использует переменную окружения OPENAI_API_KEY
 
 @app.post("/wazzup/webhook")
 async def wazzup_webhook(request: Request):
@@ -17,17 +17,16 @@ async def wazzup_webhook(request: Request):
         data = await request.json()
         logger.info(f"📩 Получен запрос: {data}")
 
-        # Правильное извлечение данных
+        # Ожидаем корректные ключи от Albato
         message_text = data.get("text", "").strip()
         chat_id = data.get("chatId", "")
         channel_id = data.get("channelId", "")
-        chat_type = data.get("chatType", "telegram")  # По умолчанию Telegram
 
         if not (message_text and chat_id and channel_id):
             logger.error("❗ Отсутствуют обязательные поля в запросе")
             return JSONResponse({"error": "Missing fields"}, status_code=400)
 
-        # GPT-ответ
+        # Ответ GPT
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
@@ -38,15 +37,15 @@ async def wazzup_webhook(request: Request):
         gpt_response = response.choices[0].message.content.strip()
         logger.info(f"🤖 Ответ GPT: {gpt_response}")
 
-        # Отправка в Wazzup
+        # Отправка ответа в Wazzup
         headers = {
             "Authorization": f"Bearer {os.getenv('WAZZUP_TOKEN')}",
             "Content-Type": "application/json"
         }
+
         json_body = {
             "chatId": chat_id,
             "channelId": channel_id,
-            "chatType": chat_type,
             "text": gpt_response
         }
 

@@ -21,11 +21,7 @@ async def wazzup_webhook(request: Request):
         logger.info(f"📩 Получен запрос: {data}")
 
         # Извлекаем текст сообщения
-        message_text = (
-            data.get("text = {{message", {}).get("text}}") or
-            data.get("text") or
-            ""
-        ).strip()
+        message_text = data.get("text", "").strip()
 
         if not message_text:
             return JSONResponse({"error": "Сообщение пустое"}, status_code=400)
@@ -42,17 +38,8 @@ async def wazzup_webhook(request: Request):
         logger.info(f"🤖 Ответ GPT: {gpt_response}")
 
         # Получаем идентификаторы
-        chat_id = (
-            data.get("chat_id = {{chat", {}).get("id}}") or
-            data.get("chatId") or
-            os.getenv("DEFAULT_CHAT_ID")
-        )
-
-        channel_id = (
-            data.get("channel = {{messenger}}") or
-            data.get("channelId") or
-            os.getenv("DEFAULT_CHANNEL_ID")
-        )
+        chat_id = data.get("chatId") or os.getenv("DEFAULT_CHAT_ID")
+        channel_id = data.get("channelId") or os.getenv("DEFAULT_CHANNEL_ID")
 
         if not chat_id or not channel_id:
             logger.warning("❗ Не удалось извлечь chat_id или channel_id")
@@ -63,7 +50,7 @@ async def wazzup_webhook(request: Request):
             result = await http_client.post(
                 url="https://api.wazzup24.com/v3/message",
                 headers={
-                    "Authorization": f"Bearer {os.getenv('WAZZUP_TOKEN')}",
+                    "Authorization": f"Bearer {os.getenv('WAZZUP_API_KEY')}",
                     "Content-Type": "application/json"
                 },
                 json={

@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
-client = OpenAI()  # Берёт ключ из переменной окружения OPENAI_API_KEY
+client = OpenAI()
 
 @app.post("/wazzup/webhook")
 async def wazzup_webhook(request: Request):
@@ -17,12 +17,12 @@ async def wazzup_webhook(request: Request):
         data = await request.json()
         logger.info(f"📩 Получен запрос: {data}")
 
-        # Извлекаем данные
-        chat_id = data.get("chatId")
-        message_text = data.get("text")
-        channel_id = data.get("channelId")
+        # Исправленное извлечение данных
+        message_text = data.get("text = {{message", {}).get("text}}", "").strip()
+        chat_id = data.get("chat_id = {{chat", {}).get("id}}", "")
+        channel_id = data.get("channel = {{messenger}}", "")
 
-        if not message_text or not chat_id or not channel_id:
+        if not (message_text and chat_id and channel_id):
             logger.error("Отсутствуют обязательные поля в запросе")
             return JSONResponse({"error": "Отсутствуют обязательные поля"}, status_code=400)
 
@@ -33,26 +33,23 @@ async def wazzup_webhook(request: Request):
                 {"role": "user", "content": message_text}
             ]
         )
-
         gpt_response = response.choices[0].message.content.strip()
         logger.info(f"🤖 Ответ GPT: {gpt_response}")
 
-        async with httpx.AsyncClient() as http_client:
-            wazzup_response = await http_client.post(
-                url="https://api.wazzup24.com/v3/message",
-                headers={
-                    "Authorization": f"Bearer {os.getenv('WAZZUP_API_KEY')}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "chatId": chat_id,
-                    "channelId": channel_id,
-                    "text": gpt_response
-                },
-                timeout=30
-            )
+        headers = {
+            "Authorization": f"Bearer {os.getenv('WAZZUP_TOKEN')}",
+            "Content-Type": "application/json"
+        }
 
-        logger.info(f"📤 Ответ отправлен в Wazzup: {wazzup_response.status_code}, {wazzup_response.text}")
+        json_body = {
+            "chatId": chat_id,
+            "channelId": channel_id,
+            "text": gpt_response
+        }
+
+        async with httpx.AsyncClient() as http_client:
+            result = await http_client.post("https://api.wazzup24.com/v3/message", headers=headers, json=json_body)
+            logger.info(f"📤 Ответ отправлен в Wazzup: {result.status_code}, {result.text}")
 
         return {"status": "ok", "reply": gpt_response}
 

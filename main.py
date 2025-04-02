@@ -1,32 +1,29 @@
-from fastapi import FastAPI, Request, HTTPException
-from pydantic import BaseModel
-import logging
+from fastapi import FastAPI, Request
+from pydantic import BaseModel, Field
+from typing import Optional
 import os
+import logging
 
 app = FastAPI()
 
-# Логирование
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("main")
 
-# Модель запроса от Wazzup
-class WazzupWebhookPayload(BaseModel):
-    chatId: str
-    channelId: str
-    chatType: str
-    text: str
-
-@app.get("/")
-def root():
-    return {"message": "OK"}
+class MessagePayload(BaseModel):
+    chatId: str = Field(..., alias="chatId")
+    channelId: str = Field(..., alias="channelId")
+    chatType: str = Field(..., alias="chatType")
+    text: str = Field(..., alias="text")
+    name: Optional[str] = Field(None, alias="name")
 
 @app.post("/wazzup/webhook")
-async def wazzup_webhook(payload: WazzupWebhookPayload):
-    logger.info(f"📩 Получено сообщение от Wazzup:\n{payload}")
+async def wazzup_webhook(payload: MessagePayload):
+    logging.info(f"Получен запрос: {payload}")
+    
+    # Пример простой логики ответа (в будущем можно вызвать GPT, Excel и т.д.)
+    reply = f"Принято сообщение от {payload.name or 'Клиент'}: {payload.text}"
 
-    # Простейшая заглушка-ответ
-    response_text = f"Вы написали: {payload.text}"
+    return {"status": "ok", "message": reply}
 
-    # Здесь можно добавить логику отправки ответа клиенту через Wazzup API
-
-    return {"status": "ok", "echo": response_text}
+@app.get("/")
+async def root():
+    return {"message": "Energy bot is live"}

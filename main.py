@@ -1,29 +1,24 @@
 import os
 import logging
-
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+
+# Важно! Импорт из httpx
+import httpx  
 from openai import OpenAI
-from httpx import Client
 
-# Настройка логов
 logging.basicConfig(level=logging.INFO)
-
-# Создаем FastAPI приложение
 app = FastAPI()
 
-# Явно создаем http-клиент без прокси
-http_client = Client(proxies=None)
+# Правильно создаем httpx-клиент
+http_client = httpx.Client()  # proxies по умолчанию не передаются
 
-# Инициализируем OpenAI клиент, используя переменную окружения и http_client
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    http_client=http_client
-)
+# Инициализируем OpenAI
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
 
 @app.get("/")
-async def root():
-    return {"status": "ok"}
+def root():
+    return {"message": "OK"}
 
 @app.post("/wazzup/webhook")
 async def wazzup_webhook(request: Request):
@@ -31,20 +26,17 @@ async def wazzup_webhook(request: Request):
         data = await request.json()
         logging.info(f"📩 Получен запрос: {data}")
 
-        # Пример обработки текста (если есть)
-        text = data.get("text", "Привет! Расскажи, чем могу помочь?")
+        prompt = data.get("text", "Расскажи, чем могу помочь?")
 
-        # Вызов OpenAI (GPT-3.5 или GPT-4)
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Ты — помощник типографии."},
-                {"role": "user", "content": text}
+                {"role": "system", "content": "Ты помощник типографии"},
+                {"role": "user", "content": prompt}
             ]
         )
 
         reply = response.choices[0].message.content.strip()
-        logging.info(f"💬 Ответ: {reply}")
         return {"reply": reply}
 
     except Exception as e:
